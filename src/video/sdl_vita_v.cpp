@@ -38,6 +38,7 @@ int _last_mouse_y = 0;
 static int _hires_dx = 0; // sub-pixel-precision counters to allow slow pointer motion of <1 pixel per frame
 static int _hires_dy = 0;
 static int _pressed_right_stick_dirs[4] = { 0, 0, 0, 0 };
+static int _pressed_cursor_keys[4] = { 0, 0, 0, 0 };
 
 static void RescaleAnalog(int *x, int *y, int dead);
 static void CreateAndPushSdlKeyEvent(uint32_t event_type, SDL_Keycode key);
@@ -119,7 +120,6 @@ static SDL_Renderer *_sdl_renderer;
 // The renderer dest format for the conversion
 static SDL_PixelFormat *_dst_format;
 static SDL_Joystick *_sdl_joystick;
-static bool _all_modes;
 
 /** Whether the drawing is/may be done in a separate thread. */
 static bool _draw_threaded;
@@ -270,40 +270,16 @@ static void GetVideoModes()
 	_num_resolutions = 1;
 }
 
-static void GetAvailableVideoMode(uint *w, uint *h)
-{
-	/* All modes available? */
-	if (_all_modes || _num_resolutions == 0) return;
-
-	/* Is the wanted mode among the available modes? */
-	for (int i = 0; i != _num_resolutions; i++) {
-		if (*w == _resolutions[i].width && *h == _resolutions[i].height) return;
-	}
-
-	/* Use the closest possible resolution */
-	int best = 0;
-	uint delta = Delta(_resolutions[0].width, *w) * Delta(_resolutions[0].height, *h);
-	for (int i = 1; i != _num_resolutions; ++i) {
-		uint newdelta = Delta(_resolutions[i].width, *w) * Delta(_resolutions[i].height, *h);
-		if (newdelta < delta) {
-			best = i;
-			delta = newdelta;
-		}
-	}
-	*w = _resolutions[best].width;
-	*h = _resolutions[best].height;
-}
-
 static void HandleAnalogSticks(void)
 {
 	int left_x = SDL_JoystickGetAxis(_sdl_joystick, 0);
 	int left_y = SDL_JoystickGetAxis(_sdl_joystick, 1);
-	RescaleAnalog(&left_x, &left_y, 3000);
+	RescaleAnalog(&left_x, &left_y, 2000);
 	_hires_dx += left_x; // sub-pixel precision to allow slow mouse motion at speeds < 1 pixel/frame
 	_hires_dy += left_y;
-
-	const int slowdown = 4096;
-
+	
+	const int slowdown = 6144;
+	
 	if (_hires_dx != 0 || _hires_dy != 0) {
 		int xrel = _hires_dx / slowdown;
 		int yrel = _hires_dy / slowdown;
@@ -356,33 +332,33 @@ static void HandleAnalogSticks(void)
 		if (right_y > 0 && right_x > 0)
 		{
 			if (right_y > slope * right_x)
-			up = 1;
+				up = 1;
 			if (right_x > slope * right_y)
-			right = 1;
+				right = 1;
 		}
 		// upper left quadrant
 		else if (right_y > 0 && right_x <= 0)
 		{
 			if (right_y > slope * (-right_x))
-			up = 1;
+				up = 1;
 			if ((-right_x) > slope * right_y)
-			left = 1;
+				left = 1;
 		}
 		// lower right quadrant
 		else if (right_y <= 0 && right_x > 0)
 		{
 			if ((-right_y) > slope * right_x)
-			down = 1;
+				down = 1;
 			if (right_x > slope * (-right_y))
-			right = 1;
+				right = 1;
 		}
 		// lower left quadrant
 		else if (right_y <= 0 && right_x <= 0)
 		{
 			if ((-right_y) > slope * (-right_x))
-			down = 1;
+				down = 1;
 			if ((-right_x) > slope * (-right_y))
-			left = 1;
+				left = 1;
 		}
 
 		_dirkeys |= ((!_pressed_right_stick_dirs[0] && down) ? OTTD_DIR_DOWN : 0) |
@@ -398,25 +374,10 @@ static void HandleAnalogSticks(void)
 				((_pressed_right_stick_dirs[3] && !right) ? OTTD_DIR_RIGHT : 0);
 	_dirkeys = _dirkeys &~tmp;
 
-	if (down)
-		_pressed_right_stick_dirs[0] = 1;
-	else
-		_pressed_right_stick_dirs[0] = 0;
-
-	if (left)
-		_pressed_right_stick_dirs[1] = 1;
-	else
-		_pressed_right_stick_dirs[1] = 0;
-
-	if (up)
-		_pressed_right_stick_dirs[2] = 1;
-	else
-		_pressed_right_stick_dirs[2] = 0;
-
-	if (right)
-		_pressed_right_stick_dirs[3] = 1;
-	else
-		_pressed_right_stick_dirs[3] = 0;
+	_pressed_right_stick_dirs[0] = down;
+	_pressed_right_stick_dirs[1] = left;
+	_pressed_right_stick_dirs[2] = up;
+	_pressed_right_stick_dirs[3] = right;
 }
 
 static void RescaleAnalog(int *x, int *y, int dead)
@@ -468,7 +429,7 @@ static void RescaleAnalog(int *x, int *y, int dead)
 		float clamping_factor = 1.0f;
 		abs_analog_x = fabs(analog_x);
 		abs_analog_y = fabs(analog_y);
-		if (abs_analog_x > max_axis || abs_analog_y > max_axis){
+		if (abs_analog_x > max_axis || abs_analog_y > max_axis) {
 			if (abs_analog_x > abs_analog_y)
 				clamping_factor = max_axis / abs_analog_x;
 			else
@@ -681,7 +642,7 @@ int VideoDriver_SDL::PollEvent()
 	switch (ev.type) {
 		case SDL_JOYAXISMOTION:
 			// Don't handle this event, instead we poll on the draw loop for the most up-to-date joystick
-			// state.
+			// state, and generate corresponding mouse events there
 			break;
 		case SDL_MOUSEMOTION:
 			if (_cursor.UpdateCursorPosition(ev.motion.x, ev.motion.y, true)) {
@@ -692,9 +653,19 @@ int VideoDriver_SDL::PollEvent()
 			_last_mouse_y = ev.motion.y;
 			HandleMouseEvents();
 			break;
+
 		case SDL_MOUSEWHEEL:
-			_cursor.wheel += ev.wheel.y;
+			if(ev.wheel.y < 0) {
+				// Zoom out
+				_cursor.wheel += 1;
+			} else if (ev.wheel.y > 0) {
+				// Zoom in
+				_cursor.wheel -= 1;
+			}			
+			HandleMouseEvents();
 			break;
+
+
 		case SDL_MOUSEBUTTONDOWN:
 			if (_rightclick_emulate && SDL_CALL SDL_GetModState() & KMOD_CTRL) {
 				ev.button.button = SDL_BUTTON_RIGHT;
@@ -709,6 +680,7 @@ int VideoDriver_SDL::PollEvent()
 					_right_button_down = true;
 					_right_button_clicked = true;
 					break;
+
 				default: break;
 			}
 			HandleMouseEvents();
@@ -754,11 +726,14 @@ int VideoDriver_SDL::PollEvent()
 			{
 				// Zoom out
 				_cursor.wheel += 1;
+				HandleMouseEvents();
 			}
 			else if (ev.jbutton.button == VITA_JOY_TRIANGLE)
 			{
 				// Zoom in
 				_cursor.wheel -= 1;
+				HandleMouseEvents();
+
 			}
 			// Map d-pad to arrow keys in order to pan screen
 			else
@@ -893,6 +868,8 @@ void VideoDriver_SDL::MainLoop()
 		uint32 prev_cur_ticks = cur_ticks; // to check for wrapping
 		InteractiveRandom(); // randomness
 
+		HandleAnalogSticks();
+		FinishSimulatedMouseClicks();
 		while (PollEvent() == -1) {}
 		if (_exit_game) break;
 
@@ -930,9 +907,40 @@ void VideoDriver_SDL::MainLoop()
 			_ctrl_pressed  = !!(mod & KMOD_CTRL);
 			_shift_pressed = !!(mod & KMOD_SHIFT);
 
-			HandleAnalogSticks();
-			FinishSimulatedMouseClicks();
-			HandleMouseEvents();
+			/* determine which directional keys are down */
+#if SDL_VERSION_ATLEAST(1, 3, 0)
+			int down = keys[SDL_SCANCODE_DOWN];
+			int left = keys[SDL_SCANCODE_LEFT];
+			int up = keys[SDL_SCANCODE_UP];
+			int right = keys[SDL_SCANCODE_RIGHT];
+#else
+			int down = keys[SDLK_DOWN];
+			int left = keys[SDLK_LEFT];
+			int up = keys[SDLK_UP];
+			int right = keys[SDLK_RIGHT];
+#endif
+			if (down && up) {
+				up = 0;
+			}
+			if (left && right) {
+				right = 0;
+			}
+			_dirkeys |= ((!_pressed_cursor_keys[0] && down) ? OTTD_DIR_DOWN : 0) |
+						((!_pressed_cursor_keys[1] && left) ? OTTD_DIR_LEFT : 0) |
+						((!_pressed_cursor_keys[2] && up) ? OTTD_DIR_UP : 0) |
+						((!_pressed_cursor_keys[3] && right) ? OTTD_DIR_RIGHT : 0);
+
+
+			uint8 tmp = ((_pressed_cursor_keys[0] && !down) ? OTTD_DIR_DOWN : 0) |
+						((_pressed_cursor_keys[1] && !left) ? OTTD_DIR_LEFT : 0) |
+						((_pressed_cursor_keys[2] && !up) ? OTTD_DIR_UP : 0) |
+						((_pressed_cursor_keys[3] && !right) ? OTTD_DIR_RIGHT : 0);
+			_dirkeys = _dirkeys &~tmp;
+
+			_pressed_cursor_keys[0] = down;
+			_pressed_cursor_keys[1] = left;
+			_pressed_cursor_keys[2] = up;
+			_pressed_cursor_keys[3] = right;
 
 			if (old_ctrl_pressed != _ctrl_pressed) HandleCtrlChanged();
 
